@@ -1,0 +1,12 @@
+services:
+  postgres:
+    image: postgres:latest
+    container_name: postgres-with-rust
+    env_file:
+      - ./.env
+    ports:
+      - "8888:5432"
+    volumes:
+      - postgresDb:/var/lib/postgres
+volumes:
+  postgresDb:
