@@ -2,8 +2,9 @@ use crate::AppState;
 use crate::errors::api_error::{ApiMessageResponse, ApiResponse, AppError, AppResult};
 use crate::helpers::jwt::generate_jwt_token;
 use crate::models::UserModel;
-use crate::schema::{SigninSchema, SignupSchema};
+use crate::schema::{SigninSchema, SignupSchema, UpdateUserSchema};
 
+use axum::extract::Path;
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use bcrypt::{DEFAULT_COST, hash, verify};
 use serde_json::json;
@@ -119,4 +120,106 @@ pub async fn signup_handler(
       Err(AppError::InternalServerError)
     }
   }
+}
+
+pub async fn get_users_handler(State(conn): State<Arc<AppState>>) -> AppResult<impl IntoResponse> {
+  let users = sqlx::query_as!(UserModel, r#"SELECT * FROM users"#)
+    .fetch_all(&conn.db)
+    .await
+    .map_err(|e| {
+      error!("db fetch failed:{}", e);
+      AppError::InternalServerError
+    })?;
+
+  Ok((
+    StatusCode::OK,
+    Json(ApiResponse {
+      status: "success",
+      message: "Users fetched successfully".to_string(),
+      data: Some(users),
+    }),
+  ))
+}
+
+pub async fn ger_user_by_id(
+  State(conn): State<Arc<AppState>>,
+  Path(user_id): Path<Uuid>,
+) -> AppResult<impl IntoResponse> {
+  let user = sqlx::query_as!(UserModel, r#"SELECT * FROM users WHERE id=$1"#, user_id)
+    .fetch_optional(&conn.db)
+    .await
+    .map_err(|e| {
+      error!("db ger_user_by_id failed: {}", e);
+      AppError::InternalServerError
+    })?;
+
+  match user {
+    Some(user) => Ok((
+      StatusCode::OK,
+      Json(ApiResponse {
+        status: "success",
+        message: "user fetched successfully".to_string(),
+        data: Some(user),
+      }),
+    )),
+    None => Err(AppError::NotFound("User not foune!".to_string())),
+  }
+}
+
+pub async fn update_user(
+  State(conn): State<Arc<AppState>>,
+  Path(user_id): Path<Uuid>,
+  Json(body): Json<UpdateUserSchema>,
+) -> AppResult<impl IntoResponse> {
+  let updated_user = sqlx::query_as!(
+    UserModel,
+    r#"UPDATE users SET name=COALESCE($1, name), email=COALESCE($2, email) WHERE id=$3 RETURNING *"#,
+    body.name,
+    body.email,
+    user_id
+  )
+  .fetch_optional(&conn.db)
+  .await
+  .map_err(|e| {
+    error!("db updated failed: {}", e);
+    AppError::InternalServerError
+  })?;
+
+  match updated_user {
+    Some(user) => Ok((
+      StatusCode::OK,
+      Json(ApiResponse {
+        status: "success",
+        message: "User updated successfully".to_string(),
+        data: Some(user),
+      }),
+    )),
+    None => Err(AppError::NotFound("User not found".to_string())),
+  }
+}
+
+pub async fn delete_user(
+  State(conn): State<Arc<AppState>>,
+  Path(user_id): Path<Uuid>,
+) -> AppResult<impl IntoResponse> {
+  let updated_user = sqlx::query_as!(
+    UserModel,
+    r#"DELETE FROM users WHERE id=$1 RETURNING *"#,
+    user_id
+  )
+  .fetch_one(&conn.db)
+  .await
+  .map_err(|e| {
+    error!("db deletion failed: {}", e);
+    AppError::InternalServerError
+  })?;
+
+  Ok((
+    StatusCode::OK,
+    Json(ApiResponse {
+      status: "success",
+      message: "User deleted successfully".to_string(),
+      data: Some(updated_user),
+    }),
+  ))
 }

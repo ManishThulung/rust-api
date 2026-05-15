@@ -18,3 +18,9 @@ pub struct Claims<T> {
   pub sub: T,
   pub exp: usize,
 }
+
+#[derive(Serialize, Deserialize)]
+pub struct UpdateUserSchema {
+  pub name: Option<String>,
+  pub email: Option<String>,
+}
