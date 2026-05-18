@@ -1,5 +1,6 @@
 use crate::AppState;
 use crate::errors::api_error::{ApiMessageResponse, ApiResponse, AppError, AppResult};
+use crate::extractors::authorization::AdminOnly;
 use crate::helpers::jwt::generate_jwt_token;
 use crate::models::UserModel;
 use crate::schema::{SigninSchema, SignupSchema, UpdateUserSchema};
@@ -15,20 +16,17 @@ use tracing::{error, info};
 use uuid::Uuid;
 
 pub async fn signin_handler(
-  State(conn): State<Arc<AppState>>,
+  State(state): State<Arc<AppState>>,
   Json(body): Json<SigninSchema>,
 ) -> AppResult<impl IntoResponse> {
-  let user = sqlx::query_as!(
-    UserModel,
-    r#"SELECT * FROM users WHERE email=$1"#,
-    body.email
-  )
-  .fetch_optional(&conn.db)
-  .await
-  .map_err(|e| {
-    error!("Database error during signin: {:?}", e);
-    AppError::InternalServerError
-  })?;
+  let user = sqlx::query_as::<_, UserModel>(r#"SELECT * FROM users WHERE email=$1"#)
+    .bind(body.email)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| {
+      error!("Database error during signin: {:?}", e);
+      AppError::InternalServerError
+    })?;
 
   let user = match user {
     Some(user) => user,
@@ -52,7 +50,7 @@ pub async fn signin_handler(
     return Err(AppError::Unauthorized("Invalid credentials".to_string()));
   }
 
-  let token = generate_jwt_token(user.id).map_err(|e| {
+  let token = generate_jwt_token(user.id, &state.jwt_secret).map_err(|e| {
     error!("jwt generation failed: {:?}", e);
     AppError::InternalServerError
   })?;
@@ -70,7 +68,7 @@ pub async fn signin_handler(
 }
 
 pub async fn signup_handler(
-  State(conn): State<Arc<AppState>>,
+  State(state): State<Arc<AppState>>,
   Json(body): Json<SignupSchema>,
 ) -> AppResult<impl IntoResponse> {
   // hashing is cpu heavy task. it performs this action in seperate thread and wait for the result
@@ -86,15 +84,14 @@ pub async fn signup_handler(
     })?;
 
   let id = Uuid::new_v4();
-  let query = sqlx::query_as!(
-    UserModel,
+  let query = sqlx::query_as::<_, UserModel>(
     r#"INSERT INTO users(id,name,password,email) VALUES  ($1, $2, $3, $4) RETURNING *"#,
-    &id,
-    &body.name,
-    hashed_password,
-    &body.email
   )
-  .fetch_one(&conn.db)
+  .bind(id)
+  .bind(body.name)
+  .bind(hashed_password)
+  .bind(body.email)
+  .fetch_one(&state.db)
   .await;
 
   match query {
@@ -122,9 +119,24 @@ pub async fn signup_handler(
   }
 }
 
-pub async fn get_users_handler(State(conn): State<Arc<AppState>>) -> AppResult<impl IntoResponse> {
-  let users = sqlx::query_as!(UserModel, r#"SELECT * FROM users"#)
-    .fetch_all(&conn.db)
+pub async fn test_handler() -> AppResult<impl IntoResponse> {
+  Ok((
+    StatusCode::CREATED,
+    Json(ApiResponse {
+      status: "success",
+      message: "user registered successfully".to_string(),
+      data: Some(6),
+    }),
+  ))
+}
+
+pub async fn get_users_handler(
+  State(state): State<Arc<AppState>>,
+  // Extension(user): Extension<CurrentUser>,
+  AdminOnly(_user): AdminOnly,
+) -> AppResult<impl IntoResponse> {
+  let users = sqlx::query_as::<_, UserModel>(r#"SELECT * FROM users"#)
+    .fetch_all(&state.db)
     .await
     .map_err(|e| {
       error!("db fetch failed:{}", e);
@@ -142,11 +154,12 @@ pub async fn get_users_handler(State(conn): State<Arc<AppState>>) -> AppResult<i
 }
 
 pub async fn ger_user_by_id(
-  State(conn): State<Arc<AppState>>,
+  State(state): State<Arc<AppState>>,
   Path(user_id): Path<Uuid>,
 ) -> AppResult<impl IntoResponse> {
-  let user = sqlx::query_as!(UserModel, r#"SELECT * FROM users WHERE id=$1"#, user_id)
-    .fetch_optional(&conn.db)
+  let user = sqlx::query_as::<_, UserModel>(r#"SELECT * FROM users WHERE id=$1"#)
+    .bind(user_id)
+    .fetch_optional(&state.db)
     .await
     .map_err(|e| {
       error!("db ger_user_by_id failed: {}", e);
@@ -167,18 +180,16 @@ pub async fn ger_user_by_id(
 }
 
 pub async fn update_user(
-  State(conn): State<Arc<AppState>>,
+  State(state): State<Arc<AppState>>,
   Path(user_id): Path<Uuid>,
   Json(body): Json<UpdateUserSchema>,
 ) -> AppResult<impl IntoResponse> {
-  let updated_user = sqlx::query_as!(
-    UserModel,
-    r#"UPDATE users SET name=COALESCE($1, name), email=COALESCE($2, email) WHERE id=$3 RETURNING *"#,
-    body.name,
-    body.email,
-    user_id
-  )
-  .fetch_optional(&conn.db)
+  let updated_user = sqlx::query_as::<_, UserModel>(
+    r#"UPDATE users SET name=COALESCE($1, name), email=COALESCE($2, email) WHERE id=$3 RETURNING *"#
+  ).bind(body.name)
+  .bind(body.email)
+  .bind(user_id)
+  .fetch_optional(&state.db)
   .await
   .map_err(|e| {
     error!("db updated failed: {}", e);
@@ -199,20 +210,17 @@ pub async fn update_user(
 }
 
 pub async fn delete_user(
-  State(conn): State<Arc<AppState>>,
+  State(state): State<Arc<AppState>>,
   Path(user_id): Path<Uuid>,
 ) -> AppResult<impl IntoResponse> {
-  let updated_user = sqlx::query_as!(
-    UserModel,
-    r#"DELETE FROM users WHERE id=$1 RETURNING *"#,
-    user_id
-  )
-  .fetch_one(&conn.db)
-  .await
-  .map_err(|e| {
-    error!("db deletion failed: {}", e);
-    AppError::InternalServerError
-  })?;
+  let updated_user = sqlx::query_as::<_, UserModel>(r#"DELETE FROM users WHERE id=$1 RETURNING *"#)
+    .bind(user_id)
+    .fetch_one(&state.db)
+    .await
+    .map_err(|e| {
+      error!("db deletion failed: {}", e);
+      AppError::InternalServerError
+    })?;
 
   Ok((
     StatusCode::OK,

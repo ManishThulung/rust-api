@@ -32,6 +32,7 @@ pub enum AppError {
   Conflict(String),
   InternalServerError,
   NotFound(String),
+  Forbidden(String),
 }
 
 impl IntoResponse for AppError {
@@ -57,6 +58,15 @@ impl IntoResponse for AppError {
 
       AppError::NotFound(message) => (
         StatusCode::NOT_FOUND,
+        Json(ErrorResponse {
+          status: "error",
+          message,
+        }),
+      )
+        .into_response(),
+
+      AppError::Forbidden(message) => (
+        StatusCode::FORBIDDEN,
         Json(ErrorResponse {
           status: "error",
           message,
